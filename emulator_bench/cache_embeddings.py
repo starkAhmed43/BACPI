@@ -144,6 +144,18 @@ def save_featurizer(featurizer: BACPIFeaturizer, embeddings_dir: Path):
     return featurizer_path
 
 
+def featurizer_summary(featurizer: BACPIFeaturizer):
+    return {
+        "n_atom_tokens": featurizer.n_atom_tokens,
+        "n_amino_tokens": featurizer.n_amino_tokens,
+        "n_atoms": len(featurizer.atom_dict),
+        "n_bonds": len(featurizer.bond_dict),
+        "n_fingerprints": len(featurizer.fingerprint_dict),
+        "n_edges": len(featurizer.edge_dict),
+        "n_words": len(featurizer.word_dict),
+    }
+
+
 def maybe_build_featurizer(args, embeddings_dir: Path, smiles_values, sequences):
     featurizer_path = embeddings_dir / "vocabs" / "featurizer.pkl"
     if featurizer_path.exists() and not args.overwrite_vocabs:
@@ -194,7 +206,7 @@ def cache_compounds(
         print("Compound caches present: 0 | to write: %s" % len(pending_smiles), flush=True)
         written = 0
         for smiles in tqdm(pending_smiles, desc="Caching compounds", unit="compound"):
-            payload = featurizer.encode_compound(smiles, build=False)
+            payload = featurizer.encode_compound(smiles, build=True)
             save_npz_atomic(compound_cache_path(embeddings_dir, smiles), payload)
             written += 1
         return written
@@ -213,7 +225,7 @@ def cache_compounds(
     )
     written = 0
     for smiles in tqdm(pending_smiles, desc="Caching compounds", unit="compound"):
-        payload = featurizer.encode_compound(smiles, build=False)
+        payload = featurizer.encode_compound(smiles, build=True)
         save_npz_atomic(compound_cache_path(embeddings_dir, smiles), payload)
         written += 1
     return written
@@ -226,7 +238,7 @@ def cache_proteins(featurizer: BACPIFeaturizer, embeddings_dir: Path, sequences,
         print("Protein caches present: 0 | to write: %s" % len(pending_sequences), flush=True)
         written = 0
         for sequence in tqdm(pending_sequences, desc="Caching proteins", unit="protein"):
-            payload = featurizer.encode_protein(sequence, build=False)
+            payload = featurizer.encode_protein(sequence, build=True)
             save_npz_atomic(protein_cache_path(embeddings_dir, sequence), payload)
             written += 1
         return written
@@ -245,7 +257,7 @@ def cache_proteins(featurizer: BACPIFeaturizer, embeddings_dir: Path, sequences,
     )
     written = 0
     for sequence in tqdm(pending_sequences, desc="Caching proteins", unit="protein"):
-        payload = featurizer.encode_protein(sequence, build=False)
+        payload = featurizer.encode_protein(sequence, build=True)
         save_npz_atomic(protein_cache_path(embeddings_dir, sequence), payload)
         written += 1
     return written
@@ -302,6 +314,7 @@ def main():
     print("Unique proteins: %s" % len(sequences), flush=True)
 
     featurizer, featurizer_path, vocab_rebuilt = maybe_build_featurizer(args, embeddings_dir, smiles_values, sequences)
+    vocab_before_cache = featurizer_summary(featurizer)
     compound_written = cache_compounds(
         featurizer,
         embeddings_dir,
@@ -309,6 +322,11 @@ def main():
         overwrite=args.overwrite,
     )
     protein_written = cache_proteins(featurizer, embeddings_dir, sequences, overwrite=args.overwrite)
+    vocab_after_cache = featurizer_summary(featurizer)
+    vocab_extended = vocab_after_cache != vocab_before_cache
+    if vocab_extended:
+        featurizer_path = save_featurizer(featurizer, embeddings_dir)
+        print("Extended BACPI vocabularies while caching new features; saved %s" % featurizer_path, flush=True)
 
     manifest = {
         "cache_version": 1,
@@ -336,6 +354,9 @@ def main():
         "compound_written": compound_written,
         "protein_written": protein_written,
         "vocab_rebuilt": vocab_rebuilt,
+        "vocab_extended": vocab_extended,
+        "vocab_before_cache": vocab_before_cache,
+        "vocab_after_cache": vocab_after_cache,
         "elapsed_seconds": round(time.time() - started, 3),
     }
     save_json(embeddings_dir / "manifest.json", manifest)
