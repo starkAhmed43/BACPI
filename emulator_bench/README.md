@@ -73,6 +73,7 @@ Cache behavior:
 - Shared-cache mode saves additional compute across value types because many compounds and protein sequences overlap between targets
 - Split files with invalid SMILES are cleaned in place during cache building by default, so the TVT filtering cost is paid once and later runs reuse the cleaned files
 - Cache rebuilding is incremental by default: existing compound and protein `.npz` files are left in place and only missing cache entries are written
+- If new split data introduces compound/protein features that were not in an existing vocabulary, the cache builder extends the vocabulary while preserving existing token IDs
 - The train wrapper refuses to run if required cache files are missing, so repeated RDKit and tokenization work does not silently creep back in
 - The train path can preload the cache into CPU memory to reduce I/O stalls
 

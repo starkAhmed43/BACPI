@@ -10,13 +10,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from emulator_bench.common import AFFINITY_VALUE_TYPES, DEFAULT_BASE_ROOT, discover_split_jobs
+from emulator_bench.common import AFFINITY_VALUE_TYPES, DEFAULT_BASE_ROOT, discover_split_jobs, is_random_split_group, split_sizes
 
 
 DEFAULT_RUNS_DIR = "default_hparams_original_retrain_runs"
 DEFAULT_METRIC_FILE = "final_results_test.csv"
 GROUP_COLUMNS = ["value_type", "split_group", "split_name", "difficulty"]
-RUN_COLUMNS = GROUP_COLUMNS + ["seed", "run_dir"]
+RUN_COLUMNS = GROUP_COLUMNS + ["seed", "train_size", "val_size", "test_size", "total_size", "run_dir"]
 BACKFILL_METRICS = ("mae", "r2")
 
 
@@ -51,15 +51,21 @@ def parse_seed(seed_name):
         return seed_value
 
 
-def difficulty_lookup(base_dir):
+def split_info_lookup(base_dir):
     lookup = {}
     for job in discover_split_jobs(base_dir):
-        lookup[(job["split_group"], job["split_name"])] = job["difficulty"]
+        key = (job["split_group"], job["split_name"])
+        info = {"difficulty": job["difficulty"]}
+        try:
+            info.update(split_sizes(Path(job["train_path"]), Path(job["val_path"]), Path(job["test_path"])))
+        except Exception:
+            pass
+        lookup[key] = info
     return lookup
 
 
 def fallback_difficulty(split_group, split_name):
-    if split_group == "random_splits" and split_name == "random":
+    if is_random_split_group(split_group) and split_name == "random":
         return "random"
     if split_group == "uniprot_time_splits":
         return split_name
@@ -130,12 +136,17 @@ def read_metric_row(metric_path, value_type, lookup):
     split_group, split_name, seed_name = relative_parts[:3]
     metrics = pd.read_csv(metric_path).iloc[0].to_dict()
     metrics = backfill_prediction_metrics(metrics, metric_path)
+    info = lookup.get((split_group, split_name), {})
     row = {
         "value_type": value_type,
         "split_group": split_group,
         "split_name": split_name,
-        "difficulty": lookup.get((split_group, split_name), fallback_difficulty(split_group, split_name)),
+        "difficulty": info.get("difficulty", fallback_difficulty(split_group, split_name)),
         "seed": parse_seed(seed_name),
+        "train_size": info.get("train_size"),
+        "val_size": info.get("val_size"),
+        "test_size": info.get("test_size"),
+        "total_size": sum(info[k] for k in ("train_size", "val_size", "test_size") if info.get(k) is not None) or None,
         "run_dir": str(metric_path.parent),
     }
     row.update(metrics)
@@ -172,7 +183,7 @@ def aggregate_value_type(base_root, value_type, runs_dir, metric_file):
     if not run_root.exists():
         return run_root, pd.DataFrame()
 
-    lookup = difficulty_lookup(base_dir)
+    lookup = split_info_lookup(base_dir)
     rows = []
     for metric_path in find_metric_paths(run_root, metric_file):
         rows.append(read_metric_row(metric_path, value_type, lookup))

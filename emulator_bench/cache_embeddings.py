@@ -23,10 +23,8 @@ from emulator_bench.common import (
 )
 from emulator_bench.feature_pipeline import (
     BACPIFeaturizer,
-    compound_cache_key,
     compound_cache_path,
     filter_invalid_smiles_rows,
-    protein_cache_key,
     protein_cache_path,
     save_npz_atomic,
 )
@@ -127,6 +125,23 @@ def collect_unique_values(jobs, sequence_col: str, smiles_col: str, clean_splits
     return sorted(smiles_values), sorted(sequences), drop_stats
 
 
+def empty_drop_stats(jobs):
+    stats = []
+    for job in jobs:
+        for split_key in ("train_path", "val_path", "test_path"):
+            stats.append(
+                {
+                    "source": str(job[split_key]),
+                    "rows_in": None,
+                    "rows_out": None,
+                    "rows_dropped": 0,
+                    "invalid_examples": [],
+                    "validation_skipped": True,
+                }
+            )
+    return stats
+
+
 def save_featurizer(featurizer: BACPIFeaturizer, embeddings_dir: Path):
     featurizer_path = embeddings_dir / "vocabs" / "featurizer.pkl"
     featurizer.save(featurizer_path)
@@ -184,14 +199,39 @@ def maybe_build_featurizer(args, embeddings_dir: Path, smiles_values, sequences)
     return featurizer, featurizer_path, True
 
 
-def index_existing_cache_keys(cache_root: Path, label: str):
-    if not cache_root.exists():
-        return set()
-    existing_keys = set()
-    iterator = tqdm(cache_root.rglob("*.npz"), desc="Indexing existing %s caches" % label, unit="file")
-    for path in iterator:
-        existing_keys.add(path.stem)
-    return existing_keys
+def load_existing_featurizer_if_compatible(args, embeddings_dir: Path):
+    featurizer_path = embeddings_dir / "vocabs" / "featurizer.pkl"
+    if not featurizer_path.exists() or args.overwrite_vocabs:
+        return None, featurizer_path
+
+    featurizer = BACPIFeaturizer.load(featurizer_path)
+    if (
+        featurizer.radius != args.radius
+        or featurizer.ngram != args.ngram
+        or featurizer.fp_radius != args.fp_radius
+        or featurizer.nbits != args.nbits
+    ):
+        raise ValueError(
+            "Existing featurizer at %s does not match requested settings. "
+            "Use --overwrite_vocabs or a different --embeddings_dir." % featurizer_path
+        )
+    return featurizer, featurizer_path
+
+
+def pending_compound_values(embeddings_dir: Path, smiles_values):
+    pending = []
+    for smiles in tqdm(smiles_values, desc="Checking compound cache files", unit="compound"):
+        if not compound_cache_path(embeddings_dir, smiles).exists():
+            pending.append(smiles)
+    return pending
+
+
+def pending_protein_values(embeddings_dir: Path, sequences):
+    pending = []
+    for sequence in tqdm(sequences, desc="Checking protein cache files", unit="protein"):
+        if not protein_cache_path(embeddings_dir, sequence).exists():
+            pending.append(sequence)
+    return pending
 
 
 def cache_compounds(
@@ -211,13 +251,7 @@ def cache_compounds(
             written += 1
         return written
 
-    existing_keys = index_existing_cache_keys(Path(embeddings_dir) / "compounds", "compound")
-    pending_smiles = []
-    iterator = tqdm(smiles_values, desc="Resolving compound cache keys", unit="compound")
-    for smiles in iterator:
-        cache_key = compound_cache_key(smiles)
-        if cache_key not in existing_keys:
-            pending_smiles.append(smiles)
+    pending_smiles = pending_compound_values(embeddings_dir, smiles_values)
     print(
         "Compound caches present: %s | to write: %s"
         % (len(smiles_values) - len(pending_smiles), len(pending_smiles)),
@@ -243,13 +277,7 @@ def cache_proteins(featurizer: BACPIFeaturizer, embeddings_dir: Path, sequences,
             written += 1
         return written
 
-    existing_keys = index_existing_cache_keys(Path(embeddings_dir) / "proteins", "protein")
-    pending_sequences = []
-    iterator = tqdm(sequences, desc="Resolving protein cache keys", unit="protein")
-    for sequence in iterator:
-        cache_key = protein_cache_key(sequence)
-        if cache_key not in existing_keys:
-            pending_sequences.append(sequence)
+    pending_sequences = pending_protein_values(embeddings_dir, sequences)
     print(
         "Protein caches present: %s | to write: %s"
         % (len(sequences) - len(pending_sequences), len(pending_sequences)),
@@ -302,31 +330,84 @@ def main():
         base_dirs_str = ", ".join(str(path) for path in base_dirs)
         raise FileNotFoundError("No split jobs discovered in %s" % base_dirs_str)
 
+    collect_started = time.time()
     smiles_values, sequences, drop_stats = collect_unique_values(
         jobs,
         sequence_col=args.sequence_col,
         smiles_col=args.smiles_col,
         clean_splits_in_place=args.clean_splits_in_place,
-        skip_smiles_validity_check=args.skip_smiles_validity_check,
+        skip_smiles_validity_check=True,
     )
+    collect_raw_seconds = round(time.time() - collect_started, 3)
     print("Discovered %s split jobs" % len(jobs), flush=True)
     print("Unique compounds: %s" % len(smiles_values), flush=True)
     print("Unique proteins: %s" % len(sequences), flush=True)
+    print("Collected split values in %s seconds" % collect_raw_seconds, flush=True)
 
-    featurizer, featurizer_path, vocab_rebuilt = maybe_build_featurizer(args, embeddings_dir, smiles_values, sequences)
-    vocab_before_cache = featurizer_summary(featurizer)
-    compound_written = cache_compounds(
-        featurizer,
-        embeddings_dir,
-        smiles_values,
-        overwrite=args.overwrite,
+    featurizer, featurizer_path = load_existing_featurizer_if_compatible(args, embeddings_dir)
+    cache_check_started = time.time()
+    pending_smiles = list(smiles_values) if args.overwrite else pending_compound_values(embeddings_dir, smiles_values)
+    pending_sequences = list(sequences) if args.overwrite else pending_protein_values(embeddings_dir, sequences)
+    cache_check_seconds = round(time.time() - cache_check_started, 3)
+    print(
+        "Cache check complete in %s seconds | compounds present=%s missing=%s | proteins present=%s missing=%s"
+        % (
+            cache_check_seconds,
+            len(smiles_values) - len(pending_smiles),
+            len(pending_smiles),
+            len(sequences) - len(pending_sequences),
+            len(pending_sequences),
+        ),
+        flush=True,
     )
-    protein_written = cache_proteins(featurizer, embeddings_dir, sequences, overwrite=args.overwrite)
-    vocab_after_cache = featurizer_summary(featurizer)
-    vocab_extended = vocab_after_cache != vocab_before_cache
-    if vocab_extended:
-        featurizer_path = save_featurizer(featurizer, embeddings_dir)
-        print("Extended BACPI vocabularies while caching new features; saved %s" % featurizer_path, flush=True)
+
+    fast_cached = (
+        featurizer is not None
+        and not args.overwrite
+        and not pending_smiles
+        and not pending_sequences
+    )
+
+    validation_seconds = 0.0
+    if fast_cached:
+        print(
+            "All requested BACPI caches are already present; skipping SMILES validation and cache writes.",
+            flush=True,
+        )
+        drop_stats = empty_drop_stats(jobs)
+        vocab_rebuilt = False
+        vocab_before_cache = featurizer_summary(featurizer)
+        vocab_after_cache = dict(vocab_before_cache)
+        vocab_extended = False
+        compound_written = 0
+        protein_written = 0
+    else:
+        if not args.skip_smiles_validity_check:
+            validation_started = time.time()
+            smiles_values, sequences, drop_stats = collect_unique_values(
+                jobs,
+                sequence_col=args.sequence_col,
+                smiles_col=args.smiles_col,
+                clean_splits_in_place=args.clean_splits_in_place,
+                skip_smiles_validity_check=False,
+            )
+            validation_seconds = round(time.time() - validation_started, 3)
+            print("Validated split SMILES in %s seconds" % validation_seconds, flush=True)
+
+        featurizer, featurizer_path, vocab_rebuilt = maybe_build_featurizer(args, embeddings_dir, smiles_values, sequences)
+        vocab_before_cache = featurizer_summary(featurizer)
+        compound_written = cache_compounds(
+            featurizer,
+            embeddings_dir,
+            smiles_values,
+            overwrite=args.overwrite,
+        )
+        protein_written = cache_proteins(featurizer, embeddings_dir, sequences, overwrite=args.overwrite)
+        vocab_after_cache = featurizer_summary(featurizer)
+        vocab_extended = vocab_after_cache != vocab_before_cache
+        if vocab_extended:
+            featurizer_path = save_featurizer(featurizer, embeddings_dir)
+            print("Extended BACPI vocabularies while caching new features; saved %s" % featurizer_path, flush=True)
 
     manifest = {
         "cache_version": 1,
@@ -353,6 +434,10 @@ def main():
         "skip_smiles_validity_check": bool(args.skip_smiles_validity_check),
         "compound_written": compound_written,
         "protein_written": protein_written,
+        "fast_cached": fast_cached,
+        "collect_raw_seconds": collect_raw_seconds,
+        "cache_check_seconds": cache_check_seconds,
+        "validation_seconds": validation_seconds,
         "vocab_rebuilt": vocab_rebuilt,
         "vocab_extended": vocab_extended,
         "vocab_before_cache": vocab_before_cache,

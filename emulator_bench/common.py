@@ -34,6 +34,8 @@ DEFAULT_SPLIT_GROUPS = [
     "conformer_cosine_splits",
 ]
 AFFINITY_VALUE_TYPES = ("ki", "kd", "ec50", "ic50")
+RANDOM_SPLIT_GROUP_ALIAS = "random_splits"
+RANDOM_SPLIT_GROUP_PREFIX = "random_splits_grouped_"
 
 
 def stable_hash(text: str) -> str:
@@ -232,12 +234,48 @@ def _find_split_file(directory: Path, stem: str) -> Optional[Path]:
     return None
 
 
+def is_random_split_group(split_group: str) -> bool:
+    return split_group == RANDOM_SPLIT_GROUP_ALIAS or split_group.startswith(RANDOM_SPLIT_GROUP_PREFIX)
+
+
+def expand_split_groups(base_dir: Path, split_groups: Iterable[str]) -> List[str]:
+    expanded: List[str] = []
+    seen = set()
+    grouped_random_dirs: Optional[List[str]] = None
+
+    def add(name: str) -> None:
+        if name not in seen:
+            seen.add(name)
+            expanded.append(name)
+
+    for split_group in split_groups:
+        split_group = str(split_group)
+        if split_group != RANDOM_SPLIT_GROUP_ALIAS:
+            add(split_group)
+            continue
+
+        if grouped_random_dirs is None:
+            grouped_random_dirs = sorted(
+                child.name
+                for child in Path(base_dir).glob("%s*" % RANDOM_SPLIT_GROUP_PREFIX)
+                if child.is_dir()
+            )
+
+        if grouped_random_dirs:
+            for grouped_split_group in grouped_random_dirs:
+                add(grouped_split_group)
+        elif (Path(base_dir) / RANDOM_SPLIT_GROUP_ALIAS).exists():
+            add(RANDOM_SPLIT_GROUP_ALIAS)
+
+    return expanded
+
+
 def discover_split_jobs(
     base_dir: Path,
     split_groups: Optional[Iterable[str]] = None,
     thresholds: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, str]]:
-    split_groups = list(split_groups or DEFAULT_SPLIT_GROUPS)
+    split_groups = expand_split_groups(Path(base_dir), split_groups or DEFAULT_SPLIT_GROUPS)
     threshold_filter = list(thresholds) if thresholds is not None else None
     jobs: List[Dict[str, str]] = []
 
@@ -250,7 +288,7 @@ def discover_split_jobs(
         val_path = _find_split_file(group_dir, "val")
         test_path = _find_split_file(group_dir, "test")
         if train_path and val_path and test_path:
-            if split_group == "random_splits":
+            if is_random_split_group(split_group):
                 split_name = "random"
                 difficulty = "random"
             else:
@@ -302,12 +340,18 @@ def discover_split_jobs(
 
 
 def resolve_single_split_job(base_dir: Path, split_group: str, threshold: Optional[str] = None) -> Dict[str, str]:
-    threshold_filter = None if split_group in {"random_splits", "uniprot_time_splits"} else normalize_threshold_args(threshold=threshold)
+    threshold_filter = None if is_random_split_group(split_group) or split_group == "uniprot_time_splits" else normalize_threshold_args(threshold=threshold)
     jobs = discover_split_jobs(base_dir, split_groups=[split_group], thresholds=threshold_filter)
     if not jobs:
         detail = "%s/%s" % (split_group, threshold) if threshold else split_group
         raise FileNotFoundError("No split job discovered for %s in %s" % (detail, base_dir))
-    if split_group in {"random_splits", "uniprot_time_splits"}:
+    if split_group == RANDOM_SPLIT_GROUP_ALIAS and len(jobs) > 1:
+        available = ", ".join(job["split_group"] for job in jobs)
+        raise ValueError(
+            "Multiple grouped random split jobs found for %s. Specify one of: %s"
+            % (split_group, available)
+        )
+    if is_random_split_group(split_group) or split_group == "uniprot_time_splits":
         return jobs[0]
     if threshold is None:
         available = ", ".join(job["split_name"] for job in jobs)
