@@ -3,7 +3,19 @@ import sys
 import time
 from pathlib import Path
 
-from tqdm.auto import tqdm
+try:
+
+    from src.utils.rich_progress import progress, write
+
+except ModuleNotFoundError:
+
+    import sys
+
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+    from src.utils.rich_progress import progress, write
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -220,7 +232,7 @@ def load_existing_featurizer_if_compatible(args, embeddings_dir: Path):
 
 def pending_compound_values(embeddings_dir: Path, smiles_values):
     pending = []
-    for smiles in tqdm(smiles_values, desc="Checking compound cache files", unit="compound"):
+    for smiles in progress(smiles_values, desc="Checking compound cache files", unit="compound"):
         if not compound_cache_path(embeddings_dir, smiles).exists():
             pending.append(smiles)
     return pending
@@ -228,7 +240,7 @@ def pending_compound_values(embeddings_dir: Path, smiles_values):
 
 def pending_protein_values(embeddings_dir: Path, sequences):
     pending = []
-    for sequence in tqdm(sequences, desc="Checking protein cache files", unit="protein"):
+    for sequence in progress(sequences, desc="Checking protein cache files", unit="protein"):
         if not protein_cache_path(embeddings_dir, sequence).exists():
             pending.append(sequence)
     return pending
@@ -245,7 +257,7 @@ def cache_compounds(
         pending_smiles = list(smiles_values)
         print("Compound caches present: 0 | to write: %s" % len(pending_smiles), flush=True)
         written = 0
-        for smiles in tqdm(pending_smiles, desc="Caching compounds", unit="compound"):
+        for smiles in progress(pending_smiles, desc="Caching compounds", unit="compound"):
             payload = featurizer.encode_compound(smiles, build=True)
             save_npz_atomic(compound_cache_path(embeddings_dir, smiles), payload)
             written += 1
@@ -258,7 +270,7 @@ def cache_compounds(
         flush=True,
     )
     written = 0
-    for smiles in tqdm(pending_smiles, desc="Caching compounds", unit="compound"):
+    for smiles in progress(pending_smiles, desc="Caching compounds", unit="compound"):
         payload = featurizer.encode_compound(smiles, build=True)
         save_npz_atomic(compound_cache_path(embeddings_dir, smiles), payload)
         written += 1
@@ -271,7 +283,7 @@ def cache_proteins(featurizer: BACPIFeaturizer, embeddings_dir: Path, sequences,
         pending_sequences = list(sequences)
         print("Protein caches present: 0 | to write: %s" % len(pending_sequences), flush=True)
         written = 0
-        for sequence in tqdm(pending_sequences, desc="Caching proteins", unit="protein"):
+        for sequence in progress(pending_sequences, desc="Caching proteins", unit="protein"):
             payload = featurizer.encode_protein(sequence, build=True)
             save_npz_atomic(protein_cache_path(embeddings_dir, sequence), payload)
             written += 1
@@ -284,7 +296,7 @@ def cache_proteins(featurizer: BACPIFeaturizer, embeddings_dir: Path, sequences,
         flush=True,
     )
     written = 0
-    for sequence in tqdm(pending_sequences, desc="Caching proteins", unit="protein"):
+    for sequence in progress(pending_sequences, desc="Caching proteins", unit="protein"):
         payload = featurizer.encode_protein(sequence, build=True)
         save_npz_atomic(protein_cache_path(embeddings_dir, sequence), payload)
         written += 1
