@@ -6,7 +6,13 @@ import numpy as np
 import pandas as pd
 from rdkit import Chem, DataStructs, RDLogger
 from rdkit.Chem import AllChem
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 from emulator_bench.common import ensure_parent, stable_hash
 
@@ -222,15 +228,15 @@ class BACPIFeaturizer:
         smiles_values = list(smiles_values)
         sequence_values = list(sequence_values)
         canonical_smiles = []
-        for value in tqdm(smiles_values, desc="Canonicalizing compounds for vocab", unit="compound"):
+        for value in progress(smiles_values, desc="Canonicalizing compounds for vocab", unit="compound"):
             canonical = try_canonicalize_smiles(value)
             if canonical is not None:
                 canonical_smiles.append(canonical)
         unique_canonical_smiles = sorted(set(canonical_smiles))
-        for smiles in tqdm(unique_canonical_smiles, desc="Building compound vocabulary", unit="compound"):
+        for smiles in progress(unique_canonical_smiles, desc="Building compound vocabulary", unit="compound"):
             self.encode_compound(smiles, build=True)
         unique_sequences = sorted({normalize_sequence(value) for value in sequence_values})
-        for sequence in tqdm(unique_sequences, desc="Building protein vocabulary", unit="protein"):
+        for sequence in progress(unique_sequences, desc="Building protein vocabulary", unit="protein"):
             self.encode_protein(sequence, build=True)
 
     @property

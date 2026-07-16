@@ -5,7 +5,13 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import torch
 from torch.utils.data import BatchSampler, DataLoader, Dataset
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 from emulator_bench.feature_pipeline import (
     compound_cache_key,
@@ -28,7 +34,7 @@ class CompoundCacheStore:
         self._cache: Dict[str, Dict] = {}
         if preload and smiles_values is not None:
             unique_smiles = sorted(set(str(value) for value in smiles_values))
-            iterator = tqdm(unique_smiles, desc=preload_desc, unit="compound") if preload_desc else unique_smiles
+            iterator = progress(unique_smiles, desc=preload_desc, unit="compound") if preload_desc else unique_smiles
             for smiles in iterator:
                 self.get(smiles)
 
@@ -51,7 +57,7 @@ class ProteinCacheStore:
         self._cache: Dict[str, Dict] = {}
         if preload and sequences is not None:
             unique_sequences = sorted(set(str(value) for value in sequences))
-            iterator = tqdm(unique_sequences, desc=preload_desc, unit="protein") if preload_desc else unique_sequences
+            iterator = progress(unique_sequences, desc=preload_desc, unit="protein") if preload_desc else unique_sequences
             for sequence in iterator:
                 self.get(sequence)
 

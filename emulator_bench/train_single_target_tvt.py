@@ -10,7 +10,13 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from tqdm.auto import tqdm
+try:
+    from src.utils.rich_progress import progress, write
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from src.utils.rich_progress import progress, write
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -94,7 +100,7 @@ def evaluate_loader(model, loader, device, autocast_dtype=None, desc="Evaluation
     truths = []
     total_loss = 0.0
     total_samples = 0
-    iterator = tqdm(loader, desc=desc, unit="batch", leave=False) if show_progress else loader
+    iterator = progress(loader, desc=desc, unit="batch", leave=False) if show_progress else loader
     with torch.inference_mode():
         for batch in iterator:
             batch = move_batch_to_device(batch, device)
@@ -118,7 +124,7 @@ def train_one_epoch(model, loader, optimizer, device, scaler, autocast_dtype=Non
     model.train()
     total_loss = 0.0
     total_samples = 0
-    iterator = tqdm(loader, desc=desc, unit="batch", leave=False)
+    iterator = progress(loader, desc=desc, unit="batch", leave=False)
     for batch in iterator:
         batch = move_batch_to_device(batch, device)
         optimizer.zero_grad(set_to_none=True)
